@@ -127,6 +127,12 @@ bool Application::Init()
 
     SetupScene();
     RebuildDetectorFromState();
+
+    // Start MediaPipe UDP listener (port 8080). If the Python tracker is not
+    // running, the receiver simply receives nothing — Kinema works normally.
+    m_udpReceiver = std::make_unique<UDPReceiver>(8080);
+    m_udpReceiver->Start();
+
     m_uiManager.Init(Geni::Engine::GetInstance().GetWindow());
     return true;
 }
@@ -461,9 +467,15 @@ void Application::Update(float deltaTime)
     }
     else if (m_riggedSkeleton)
     {
+        // Pull the latest MediaPipe pose from the UDP receiver (may be empty
+        // if the Python tracker is not running — graceful no-op).
+        MediaPipePose mpPose;
+        if (m_udpReceiver)
+            mpPose = m_udpReceiver->GetLatestPose();
+
         m_skelDriver.Apply(*m_riggedSkeleton, observations, [this](const MarkerObservation &o) {
             return Unproject2DtoWorld(o.centroidNorm, o.areaPixels);
-        });
+        }, mpPose);
 
         if (m_recorder.IsRecording())
             m_recorder.AddSkeletonKeyframe(*m_riggedSkeleton);
@@ -562,6 +574,8 @@ void Application::Render()
 void Application::Destroy()
 {
     m_uiManager.Destroy();
+    if (m_udpReceiver)
+        m_udpReceiver->Stop();
     if (m_detector)
     {
         m_detector->Destroy();

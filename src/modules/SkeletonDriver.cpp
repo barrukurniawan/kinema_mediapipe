@@ -175,7 +175,7 @@ const std::vector<IKChain> &SkeletonDriver::GetIKChains() const
 }
 
 void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObservation> &observations,
-                           const Unproject &unproject)
+                           const Unproject &unproject, const MediaPipePose &mpPose)
 {
     auto byId = IndexById(observations);
 
@@ -215,12 +215,12 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
     for (auto &chain : m_chains)
     {
         // Cheap early-out: skip the chain entirely if none of its markers are
-        // visible. Per-bone visibility (which pair drives which bone) is resolved
-        // in SolveArmChain.
-        bool anyVisible = byId.count(chain.markerId) ||
-                          (chain.upperArmMarkerId >= 0 && byId.count(chain.upperArmMarkerId)) ||
-                          (chain.foreArmMarkerId >= 0 && byId.count(chain.foreArmMarkerId));
-        if (!anyVisible)
+        // visible AND MediaPipe has no data for this chain's arm side.
+        bool anyColorVisible = byId.count(chain.markerId) ||
+                               (chain.upperArmMarkerId >= 0 && byId.count(chain.upperArmMarkerId)) ||
+                               (chain.foreArmMarkerId >= 0 && byId.count(chain.foreArmMarkerId));
+        bool hasMpData = !mpPose.empty();
+        if (!anyColorVisible && !hasMpData)
             continue;
 
         int rootIdx = skeleton.FindJoint(chain.rootBoneName);
@@ -233,42 +233,78 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
         Geni::GameObject *rootBone = skeleton.GetJointNode(rootIdx);
         Geni::GameObject *midBone = skeleton.GetJointNode(midIdx);
 
-        // Shoulder joint stays fixed at its current world position (bind pose /
-        // parent chain). Only the upper-arm and forearm bones rotate.
         glm::vec3 rootPos = rootBone ? glm::vec3(rootBone->GetWorldTransform()[3]) : chain.rootBindWorldPos;
 
-        // Gather the three arm markers. Z is pinned to the shoulder plane on all
-        // three so the bones articulate in the frontal plane rather than reaching
-        // toward the camera on noisy depth-from-area estimates. Directions are
-        // taken marker-to-marker (U→L, L→P) in SolveArmChain, so the markers share
-        // a frame and a rest-down arm reads as down.
-        auto fetch = [&](int id, glm::vec3 &out) -> bool {
-            if (id < 0)
-                return false;
-            auto mIt = byId.find(id);
-            if (mIt == byId.end())
-                return false;
+        // ── Sensor Fusion: determine per-bone source ──────────────────────────
+        // Identify which arm (L/R) this chain is for by checking the root bone name.
+        bool isLeft = (chain.rootBoneName.find("Left") != std::string::npos ||
+                       chain.rootBoneName.find("left") != std::string::npos ||
+                       chain.rootBoneName.find("_L") != std::string::npos);
+
+        int mpShoulderIdx = isLeft ? MP_LEFT_SHOULDER  : MP_RIGHT_SHOULDER;
+        int mpElbowIdx    = isLeft ? MP_LEFT_ELBOW     : MP_RIGHT_ELBOW;
+        int mpWristIdx    = isLeft ? MP_LEFT_WRIST     : MP_RIGHT_WRIST;
+
+        // Build per-marker source slots — prefer color markers when visible,
+        // fall back to MediaPipe landmarks (mapped to the camera-view frame).
+        auto fetch = [&](int colorId, glm::vec3 &out) -> bool {
+            if (colorId < 0) return false;
+            auto mIt = byId.find(colorId);
+            if (mIt == byId.end()) return false;
             out = unproject(*mIt->second);
             out.z = rootPos.z;
             return true;
         };
 
+        // Helper: map MediaPipe normalized (x,y,z) to the same world space that
+        // the color markers live in.  MP x/y are normalized [0..1] matching
+        // centroidNorm, so re-use Unproject2DtoWorld's linear formula here.
+        // MP z encodes depth relative to the hip — we ignore it and pin to the
+        // shoulder plane exactly as the color-marker solver does.
+        //
+        // X is NEGATED: in a non-mirrored webcam feed the user's LEFT hand
+        // appears on the RIGHT side of the frame (high x). The 3D character
+        // faces +Z (away from camera) so its LEFT arm lives at NEGATIVE worldX.
+        // Negating aligns the two spaces so left->left and right->right.
+        auto mpToWorld = [&](int mpId, glm::vec3 &out) -> bool {
+            if (!mpPose.hasJoint(mpId, 0.4f)) return false;
+            glm::vec3 lm = mpPose.getJoint(mpId);
+            float worldX = -(lm.x - 0.5f) * 2.0f;   // negated to fix mirror
+            float worldY = -(lm.y - 0.5f) * 2.0f;
+            float worldZ = rootPos.z;
+            worldX *= (worldZ / (chain.rootBindWorldPos.z > 0.1f ? chain.rootBindWorldPos.z : 1.5f));
+            worldY *= (worldZ / (chain.rootBindWorldPos.z > 0.1f ? chain.rootBindWorldPos.z : 1.5f));
+            out = glm::vec3(worldX, worldY, worldZ);
+            return true;
+        };
+
         glm::vec3 upperMarker(0.0f), lowerMarker(0.0f), palmMarker(0.0f);
+
+        // Upper arm: always prefer color marker; fall back to MP shoulder→elbow midpoint.
         bool haveU = fetch(chain.upperArmMarkerId, upperMarker);
+        if (!haveU) haveU = mpToWorld(mpShoulderIdx, upperMarker);
+
+        // Forearm: prefer color marker; fall back to MP elbow.
         bool haveL = fetch(chain.foreArmMarkerId, lowerMarker);
+        if (!haveL) haveL = mpToWorld(mpElbowIdx, lowerMarker);
+
+        // Palm (end-effector): Sensor Fusion core logic.
+        // Priority: color marker >> MediaPipe wrist
         bool haveP = fetch(chain.markerId, palmMarker);
         if (haveP)
+        {
             palmMarker += chain.worldOffset;
+        }
+        else if (mpToWorld(mpWristIdx, palmMarker))
+        {
+            // MediaPipe fallback: use AI wrist position
+            haveP = true;
+        }
 
-        // Constant forward lean: the solver aims bones by inter-marker direction, so
-        // only the Z *difference* between markers tilts the arm. Push the markers
-        // toward the front of the body by a graduated amount down the chain (upper
-        // stays at the shoulder plane, elbow half, palm full) so the whole arm leans
-        // forward out of the flat frontal plane.
         if (armForward != 0.0f)
         {
             lowerMarker.z += armForward * 0.5f;
-            palmMarker.z += armForward;
+            palmMarker.z  += armForward;
         }
 
         SolveArmChain(rootBone, midBone, chain, rootPos, upperMarker, haveU, lowerMarker, haveL,

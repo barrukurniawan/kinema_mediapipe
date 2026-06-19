@@ -1,6 +1,7 @@
 #pragma once
 
 #include "modules/MarkerDetection.h"
+#include "modules/UDPReceiver.h"
 
 #include <functional>
 #include <glm/gtc/quaternion.hpp>
@@ -71,9 +72,14 @@ class SkeletonDriver
     void SetIKChains(std::vector<IKChain> chains);
     const std::vector<IKChain> &GetIKChains() const;
 
-    // Apply bindings and IK chains to the skeleton. Missing bones or unseen markers
-    // are silently skipped so the rest of the rig stays in its bind pose.
-    void Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObservation> &observations, const Unproject &unproject);
+    // Apply bindings and IK chains to the skeleton.
+    // - observations: live color-marker detections from HSV/RGB detector
+    // - unproject:    2D->3D unprojection functor
+    // - mpPose:       (optional) latest MediaPipe pose from UDPReceiver;
+    //                 when non-empty, it provides the base arm skeleton.
+    //                 Color markers override the end-effectors (Sensor Fusion).
+    void Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObservation> &observations,
+               const Unproject &unproject, const MediaPipePose &mpPose = MediaPipePose{});
 
     // Constant forward lean for every IK arm chain. Tilts the whole arm (upper +
     // forearm) toward the front of the body by a fixed amount — applied at rest and

@@ -10,3 +10,6 @@ imgui.ini
 output.json
 output.mp4
 profiling.json
+
+# Python virtual environment for MediaPipe tracker
+tools/mediapipe-env/

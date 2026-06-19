@@ -59,6 +59,7 @@ set(SRC_FILES
     src/modules/MarkerStabilizer.cpp
     src/modules/MotionRecorder.cpp
     src/modules/SkeletonDriver.cpp
+    src/modules/UDPReceiver.cpp
     src/modules/VideoExporter.cpp
     src/modules/GlbExporter.cpp
     src/ui/UIManager.cpp

@@ -8,6 +8,7 @@
 #include "modules/MotionRecorder.h"
 #include "modules/RGBRatioMarkerDetector.h"
 #include "modules/SkeletonDriver.h"
+#include "modules/UDPReceiver.h"
 #include "modules/VideoExporter.h"
 #include "ui/UIManager.h"
 
@@ -30,6 +31,7 @@ class Application : public Geni::Application
 
     // Modules
     std::unique_ptr<IMarkerDetector> m_detector;
+    std::unique_ptr<UDPReceiver> m_udpReceiver;
     MotionRecorder m_recorder;
     VideoExporter m_exporter;
     GlbExporter m_glbExporter;
