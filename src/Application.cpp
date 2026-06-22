@@ -211,6 +211,22 @@ void Application::LoadRigFromState()
     m_uiState.loadedModelPath = m_uiState.modelPath;
     m_uiState.availableBones.clear();
     CollectBoneNames(m_riggedObj, m_uiState.availableBones);
+
+    // Detect Valve/Source-style Z-up models (e.g. the FBI CS2 model) and apply
+    // a corrective -90° X rotation so they stand upright in Y-up world space.
+    // Source models have bone names like pelvis_86, arm_upper_l_30, leg_upper_l_78.
+    for (const auto &boneName : m_uiState.availableBones)
+    {
+        if (boneName.find("pelvis_") == 0 || boneName.find("arm_upper_") == 0 ||
+            boneName.find("leg_upper_") == 0 || boneName.find("spine_0_") == 0 ||
+            boneName.find("head_0_") == 0)
+        {
+            m_riggedObj->SetRotation(glm::angleAxis(-glm::pi<float>() * 0.5f,
+                                                     glm::vec3(1.0f, 0.0f, 0.0f)));
+            break;
+        }
+    }
+
     m_uiState.markersDirty = true; // re-validate bindings against the new skeleton
 }
 

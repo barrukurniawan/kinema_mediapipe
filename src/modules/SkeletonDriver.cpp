@@ -211,7 +211,12 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
 
         int jointIndex = skeleton.FindJoint(binding.boneName);
         if (jointIndex < 0)
-            continue;
+        {
+            if (binding.mode == MarkerBinding::Mode::LookAt)
+                jointIndex = FindBoneWithFallbacks(skeleton, {"mixamorig:Head", "Head", "head_0_0"});
+            if (jointIndex < 0)
+                continue;
+        }
         Geni::GameObject *bone = skeleton.GetJointNode(jointIndex);
         if (!bone)
             continue;
@@ -251,6 +256,40 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
         int midIdx = skeleton.FindJoint(chain.midBoneName);
         int endIdx = skeleton.FindJoint(chain.endBoneName);
         if (rootIdx < 0 || midIdx < 0 || endIdx < 0)
+        {
+            bool isLeftArm = (chain.rootBoneName.find("Left") != std::string::npos ||
+                              chain.rootBoneName.find("left") != std::string::npos ||
+                              chain.rootBoneName.find("_l_") != std::string::npos);
+            bool isRightArm = !isLeftArm && (chain.rootBoneName.find("Right") != std::string::npos ||
+                                             chain.rootBoneName.find("right") != std::string::npos ||
+                                             chain.rootBoneName.find("_r_") != std::string::npos);
+            if (isLeftArm || isRightArm)
+            {
+                const std::vector<std::string> &rootNames = isLeftArm
+                    ? std::vector<std::string>{"mixamorig:LeftArm", "LeftArm", "arm_upper_l_30"}
+                    : std::vector<std::string>{"mixamorig:RightArm", "RightArm", "arm_upper_r_60"};
+                const std::vector<std::string> &midNames = isLeftArm
+                    ? std::vector<std::string>{"mixamorig:LeftForeArm", "LeftForeArm", "arm_lower_l_27"}
+                    : std::vector<std::string>{"mixamorig:RightForeArm", "RightForeArm", "arm_lower_r_57"};
+                const std::vector<std::string> &endNames = isLeftArm
+                    ? std::vector<std::string>{"mixamorig:LeftHand", "LeftHand", "hand_l_24"}
+                    : std::vector<std::string>{"mixamorig:RightHand", "RightHand", "hand_r_54"};
+
+                if (rootIdx < 0) rootIdx = FindBoneWithFallbacks(skeleton, rootNames);
+                if (midIdx  < 0) midIdx  = FindBoneWithFallbacks(skeleton, midNames);
+                if (endIdx  < 0) endIdx  = FindBoneWithFallbacks(skeleton, endNames);
+
+                if (rootIdx >= 0 && midIdx >= 0 && endIdx >= 0)
+                {
+                    chain.rootBoneName = skeleton.GetJointNode(rootIdx)->GetName();
+                    chain.midBoneName  = skeleton.GetJointNode(midIdx)->GetName();
+                    chain.endBoneName  = skeleton.GetJointNode(endIdx)->GetName();
+                    chain.upperLen = -1.0f;
+                    chain.lowerLen = -1.0f;
+                }
+            }
+        }
+        if (rootIdx < 0 || midIdx < 0 || endIdx < 0)
             continue;
 
         PrimeIKChain(chain, skeleton, rootIdx, midIdx, endIdx);
@@ -263,7 +302,8 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
         // Identify which arm (L/R) this chain is for by checking the root bone name.
         bool isLeft = (chain.rootBoneName.find("Left") != std::string::npos ||
                        chain.rootBoneName.find("left") != std::string::npos ||
-                       chain.rootBoneName.find("_L") != std::string::npos);
+                       chain.rootBoneName.find("_L") != std::string::npos ||
+                       chain.rootBoneName.find("_l_") != std::string::npos);
 
         int mpShoulderIdx = isLeft ? MP_LEFT_SHOULDER  : MP_RIGHT_SHOULDER;
         int mpElbowIdx    = isLeft ? MP_LEFT_ELBOW     : MP_RIGHT_ELBOW;
@@ -378,7 +418,11 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
             if (byId.count(binding.markerId))              continue; // color marker takes priority
 
             int jointIndex = skeleton.FindJoint(binding.boneName);
-            if (jointIndex < 0) continue;
+            if (jointIndex < 0)
+            {
+                jointIndex = FindBoneWithFallbacks(skeleton, {"mixamorig:Head", "Head", "head_0_0"});
+                if (jointIndex < 0) continue;
+            }
             Geni::GameObject *bone = skeleton.GetJointNode(jointIndex);
             if (!bone) continue;
 
