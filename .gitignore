@@ -13,3 +13,4 @@ profiling.json
 
 # Python virtual environment for MediaPipe tracker
 tools/mediapipe-env/tools/.hidden_tracker.py
+tools/mediapipe-env/
