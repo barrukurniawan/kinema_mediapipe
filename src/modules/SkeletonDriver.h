@@ -89,4 +89,7 @@ class SkeletonDriver
   private:
     std::vector<MarkerBinding> m_bindings;
     std::vector<IKChain> m_chains;
+
+    IKChain m_leftLegChain;
+    IKChain m_rightLegChain;
 };

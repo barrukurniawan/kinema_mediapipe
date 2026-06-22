@@ -315,6 +315,7 @@ void UIManager::DrawModelSection(UIState &state)
 void UIManager::DrawDetectorSection(UIState &state)
 {
     ImGui::Text("Color Tracking");
+    ImGui::Checkbox("Enable Color Detection", &state.enableColorDetection);
     int modeIdx = static_cast<int>(state.detectionMode);
     if (ImGui::Combo("Mode##detection_mode", &modeIdx, "HSV\0RGB Ratio\0"))
     {

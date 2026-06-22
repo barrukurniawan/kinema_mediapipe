@@ -61,6 +61,7 @@ struct UIState
 
     // Detector backend selection
     DetectionMode detectionMode = DetectionMode::HSV;
+    bool enableColorDetection = true;
     bool detectionModeDirty = false; // set when mode changes; triggers detector rebuild
     int rgbPoolSize = 8;             // RGB-ratio average-pool block size
     bool showPooledFrame = false;    // show pooled frame instead of raw in camera feed

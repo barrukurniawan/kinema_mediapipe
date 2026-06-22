@@ -22,6 +22,12 @@ constexpr int MP_LEFT_EAR   = 8;   // person's left ear
 constexpr int MP_LEFT_HIP   = 23;  // person's right hip  (constant naming follows arm convention)
 constexpr int MP_RIGHT_HIP  = 24;  // person's left hip
 
+// Leg landmark IDs
+constexpr int MP_LEFT_KNEE   = 25;
+constexpr int MP_RIGHT_KNEE  = 26;
+constexpr int MP_LEFT_ANKLE  = 27;
+constexpr int MP_RIGHT_ANKLE = 28;
+
 struct MediaPipeLandmark {
     int id;
     glm::vec3 pos; // raw normalized (x,y) and metric (z)

@@ -132,6 +132,10 @@ For a detailed walkthrough of all interface panels, see the [User Guide (USAGE.m
 - **Marker not detected?** Adjust the Hue/Saturation/Value sliders in the Markers panel. Bright lighting is essential for HSV tracking.
 - **Low FPS?** Ensure you are running a **Release** build.
 
+## Credits
+
+- "FBI | CS2 Agent Model №1" (https://skfb.ly/oO8UI) by gettan is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

@@ -152,6 +152,17 @@ void SolveArmChain(Geni::GameObject *root, Geni::GameObject *mid, const IKChain 
     glm::quat elbowWorldRot = elbowDelta * shoulderDelta * chain.midBindWorldRot;
     mid->SetRotation(WorldToLocalRot(mid, elbowWorldRot));
 }
+
+int FindBoneWithFallbacks(const Geni::Skeleton &skeleton, const std::vector<std::string> &names)
+{
+    for (const auto &name : names)
+    {
+        int idx = skeleton.FindJoint(name);
+        if (idx >= 0)
+            return idx;
+    }
+    return -1;
+}
 } // namespace
 
 void SkeletonDriver::SetBindings(std::vector<MarkerBinding> bindings)
@@ -178,6 +189,19 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
                            const Unproject &unproject, const MediaPipePose &mpPose)
 {
     auto byId = IndexById(observations);
+
+    // Helper: map MediaPipe normalized (x,y,z) to the same world space that
+    // the color markers live in. Shared by arms and legs.
+    auto mpToWorld = [&](int mpId, glm::vec3 &out, float rootBindZ) -> bool {
+        if (mpPose.empty() || !mpPose.hasJoint(mpId, 0.4f)) return false;
+        glm::vec3 lm = mpPose.getJoint(mpId);
+        float refZ = (rootBindZ > 0.1f) ? rootBindZ : 1.5f;
+        float worldX =  (lm.x - 0.5f) * 2.0f * refZ;
+        float worldY = -(lm.y - 0.5f) * 2.0f * refZ;
+        float worldZ = refZ - lm.z;
+        out = glm::vec3(worldX, worldY, worldZ);
+        return true;
+    };
 
     for (const auto &binding : m_bindings)
     {
@@ -256,45 +280,15 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
             return true;
         };
 
-        // Helper: map MediaPipe normalized (x,y,z) to the same world space that
-        // the color markers live in.
-        //
-        // Formula mirrors Unproject2DtoWorld (color markers):
-        //   worldX = (x - 0.5) * 2  ← NO negation on X (same as color markers)
-        //   worldY = -(y - 0.5) * 2 ← negated because screen Y goes down, world Y up
-        //
-        // The old code negated X based on a wrong assumption. Negating X flips
-        // the direction vector sign when the arm moves sideways, causing
-        // RotationBetween() to rotate the bone INWARD (through the body/back)
-        // instead of OUTWARD/UPWARD naturally. Color markers never needed X
-        // negation, so MediaPipe should not either.
-        //
-        // DEPTH: Use bind-pose shoulder depth as stable reference (fallback 1.5m)
-        // so we don't collapse to zero when depth calibration hasn't been done.
-        auto mpToWorld = [&](int mpId, glm::vec3 &out) -> bool {
-            if (!mpPose.hasJoint(mpId, 0.4f)) return false;
-            glm::vec3 lm = mpPose.getJoint(mpId);
-            float refZ = (chain.rootBindWorldPos.z > 0.1f) ? chain.rootBindWorldPos.z : 1.5f;
-            float worldX =  (lm.x - 0.5f) * 2.0f * refZ;   // matches color marker formula
-            float worldY = -(lm.y - 0.5f) * 2.0f * refZ;   // screen Y is inverted vs world Y
-            // lm.z is metric depth from pose_world_landmarks (metres).
-            // MediaPipe convention: Z is POSITIVE toward the camera.
-            // So when the user punches forward (toward camera), lm.z increases.
-            // We SUBTRACT it so worldZ decreases (= closer to camera in our world).
-            float worldZ = refZ - lm.z;   // lm.z>0 when forward -> worldZ decreases toward camera
-            out = glm::vec3(worldX, worldY, worldZ);
-            return true;
-        };
-
         glm::vec3 upperMarker(0.0f), lowerMarker(0.0f), palmMarker(0.0f);
 
         // Upper arm: always prefer color marker; fall back to MP shoulder→elbow midpoint.
         bool haveU = fetch(chain.upperArmMarkerId, upperMarker);
-        if (!haveU) haveU = mpToWorld(mpShoulderIdx, upperMarker);
+        if (!haveU) haveU = mpToWorld(mpShoulderIdx, upperMarker, chain.rootBindWorldPos.z);
 
         // Forearm: prefer color marker; fall back to MP elbow.
         bool haveL = fetch(chain.foreArmMarkerId, lowerMarker);
-        if (!haveL) haveL = mpToWorld(mpElbowIdx, lowerMarker);
+        if (!haveL) haveL = mpToWorld(mpElbowIdx, lowerMarker, chain.rootBindWorldPos.z);
 
         // Palm (end-effector): Sensor Fusion core logic.
         // Priority: color marker >> MediaPipe wrist
@@ -303,7 +297,7 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
         {
             palmMarker += chain.worldOffset;
         }
-        else if (mpToWorld(mpWristIdx, palmMarker))
+        else if (mpToWorld(mpWristIdx, palmMarker, chain.rootBindWorldPos.z))
         {
             // MediaPipe fallback: use AI wrist position
             haveP = true;
@@ -453,6 +447,102 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
             glm::quat torsoWorldRot = yawQ * leanQ * torsoBindRot;
             bone->SetRotation(WorldToLocalRot(bone, torsoWorldRot));
             break;  // only drive one torso bone
+        }
+    }
+
+    // ── MediaPipe leg tracking ────────────────────────────────────────────────
+    if (!mpPose.empty())
+    {
+        // For Left Leg
+        bool leftLegValid = !m_leftLegChain.rootBoneName.empty() && skeleton.FindJoint(m_leftLegChain.rootBoneName) >= 0;
+        if (!leftLegValid)
+        {
+            int rootIdx = FindBoneWithFallbacks(skeleton, {"mixamorig:LeftUpLeg", "LeftUpLeg", "mixamorig:LeftThigh", "LeftThigh"});
+            int midIdx  = FindBoneWithFallbacks(skeleton, {"mixamorig:LeftLeg", "LeftLeg", "mixamorig:LeftShin", "LeftShin"});
+            int endIdx  = FindBoneWithFallbacks(skeleton, {"mixamorig:LeftFoot", "LeftFoot", "mixamorig:LeftAnkle", "LeftAnkle"});
+            if (rootIdx >= 0 && midIdx >= 0 && endIdx >= 0)
+            {
+                m_leftLegChain.rootBoneName = skeleton.GetJointNode(rootIdx)->GetName();
+                m_leftLegChain.midBoneName  = skeleton.GetJointNode(midIdx)->GetName();
+                m_leftLegChain.endBoneName  = skeleton.GetJointNode(endIdx)->GetName();
+                m_leftLegChain.upperLen = -1.0f; // Force PrimeIKChain to run again
+                m_leftLegChain.lowerLen = -1.0f;
+                leftLegValid = true;
+            }
+            else
+            {
+                m_leftLegChain.rootBoneName = "";
+            }
+        }
+
+        if (leftLegValid)
+        {
+            int rootIdx = skeleton.FindJoint(m_leftLegChain.rootBoneName);
+            int midIdx = skeleton.FindJoint(m_leftLegChain.midBoneName);
+            int endIdx = skeleton.FindJoint(m_leftLegChain.endBoneName);
+
+            PrimeIKChain(m_leftLegChain, skeleton, rootIdx, midIdx, endIdx);
+
+            Geni::GameObject *rootBone = skeleton.GetJointNode(rootIdx);
+            Geni::GameObject *midBone = skeleton.GetJointNode(midIdx);
+
+            glm::vec3 rootPos = rootBone ? glm::vec3(rootBone->GetWorldTransform()[3]) : m_leftLegChain.rootBindWorldPos;
+
+            glm::vec3 hipMarker(0.0f), kneeMarker(0.0f), ankleMarker(0.0f);
+            bool haveU = mpToWorld(MP_LEFT_HIP, hipMarker, m_leftLegChain.rootBindWorldPos.z);
+            bool haveL = mpToWorld(MP_LEFT_KNEE, kneeMarker, m_leftLegChain.rootBindWorldPos.z);
+            bool haveP = mpToWorld(MP_LEFT_ANKLE, ankleMarker, m_leftLegChain.rootBindWorldPos.z);
+
+            if (haveU && haveL && haveP)
+            {
+                SolveArmChain(rootBone, midBone, m_leftLegChain, rootPos, hipMarker, haveU, kneeMarker, haveL, ankleMarker, haveP);
+            }
+        }
+
+        // For Right Leg
+        bool rightLegValid = !m_rightLegChain.rootBoneName.empty() && skeleton.FindJoint(m_rightLegChain.rootBoneName) >= 0;
+        if (!rightLegValid)
+        {
+            int rootIdx = FindBoneWithFallbacks(skeleton, {"mixamorig:RightUpLeg", "RightUpLeg", "mixamorig:RightThigh", "RightThigh"});
+            int midIdx  = FindBoneWithFallbacks(skeleton, {"mixamorig:RightLeg", "RightLeg", "mixamorig:RightShin", "RightShin"});
+            int endIdx  = FindBoneWithFallbacks(skeleton, {"mixamorig:RightFoot", "RightFoot", "mixamorig:RightAnkle", "RightAnkle"});
+            if (rootIdx >= 0 && midIdx >= 0 && endIdx >= 0)
+            {
+                m_rightLegChain.rootBoneName = skeleton.GetJointNode(rootIdx)->GetName();
+                m_rightLegChain.midBoneName  = skeleton.GetJointNode(midIdx)->GetName();
+                m_rightLegChain.endBoneName  = skeleton.GetJointNode(endIdx)->GetName();
+                m_rightLegChain.upperLen = -1.0f;
+                m_rightLegChain.lowerLen = -1.0f;
+                rightLegValid = true;
+            }
+            else
+            {
+                m_rightLegChain.rootBoneName = "";
+            }
+        }
+
+        if (rightLegValid)
+        {
+            int rootIdx = skeleton.FindJoint(m_rightLegChain.rootBoneName);
+            int midIdx = skeleton.FindJoint(m_rightLegChain.midBoneName);
+            int endIdx = skeleton.FindJoint(m_rightLegChain.endBoneName);
+
+            PrimeIKChain(m_rightLegChain, skeleton, rootIdx, midIdx, endIdx);
+
+            Geni::GameObject *rootBone = skeleton.GetJointNode(rootIdx);
+            Geni::GameObject *midBone = skeleton.GetJointNode(midIdx);
+
+            glm::vec3 rootPos = rootBone ? glm::vec3(rootBone->GetWorldTransform()[3]) : m_rightLegChain.rootBindWorldPos;
+
+            glm::vec3 hipMarker(0.0f), kneeMarker(0.0f), ankleMarker(0.0f);
+            bool haveU = mpToWorld(MP_RIGHT_HIP, hipMarker, m_rightLegChain.rootBindWorldPos.z);
+            bool haveL = mpToWorld(MP_RIGHT_KNEE, kneeMarker, m_rightLegChain.rootBindWorldPos.z);
+            bool haveP = mpToWorld(MP_RIGHT_ANKLE, ankleMarker, m_rightLegChain.rootBindWorldPos.z);
+
+            if (haveU && haveL && haveP)
+            {
+                SolveArmChain(rootBone, midBone, m_rightLegChain, rootPos, hipMarker, haveU, kneeMarker, haveL, ankleMarker, haveP);
+            }
         }
     }
 }

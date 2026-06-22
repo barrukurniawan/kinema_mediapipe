@@ -385,7 +385,7 @@ void Application::Update(float deltaTime)
     }
 
     std::vector<MarkerObservation> observations;
-    if (m_detector)
+    if (m_detector && m_uiState.enableColorDetection)
     {
         observations = m_detector->Detect();
 
