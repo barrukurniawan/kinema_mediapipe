@@ -14,8 +14,27 @@ import time
 import os
 import signal
 import sys
+import threading
+import argparse
 
-# Exit cleanly if parent process (Kinema) dies or sends SIGTERM
+# Watchdog to exit cleanly if Kinema dies
+parser = argparse.ArgumentParser()
+parser.add_argument("--kinema_pid", type=int, default=0)
+args, _ = parser.parse_known_args()
+
+def check_parent_alive(pid):
+    if pid <= 0: return
+    while True:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            print("Kinema closed. Shutting down tracker...")
+            os._exit(0)
+        time.sleep(1)
+
+if args.kinema_pid > 0:
+    threading.Thread(target=check_parent_alive, args=(args.kinema_pid,), daemon=True).start()
+
 def signal_handler(sig, frame):
     sys.exit(0)
 signal.signal(signal.SIGTERM, signal_handler)

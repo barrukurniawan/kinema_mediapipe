@@ -141,15 +141,24 @@ bool Application::Init()
 
     // Auto-launch the embedded Python tracker
     {
-        std::ofstream out("tools/.hidden_tracker.py");
+        // Calculate absolute path to project root relative to the executable
+        // Executable is at: PROJECT_ROOT/build/Kinema.app/Contents/MacOS/
+        auto exeFolder = Geni::Engine::GetInstance().GetFileSystem().GetExecutableFolder();
+        auto projectRoot = exeFolder.parent_path().parent_path().parent_path().parent_path().parent_path();
+        
+        std::string scriptPath = (projectRoot / "tools" / ".hidden_tracker.py").string();
+
+        std::ofstream out(scriptPath);
         out << EMBEDDED_PYTHON_TRACKER;
         out.close();
 
-        m_trackerPid = fork();
-        if (m_trackerPid == 0) {
-            execl("/bin/bash", "bash", "-c", "source tools/mediapipe-env/bin/activate && python3 tools/.hidden_tracker.py", NULL);
-            exit(1);
-        }
+        // Use osascript to open a new Terminal window so Python has GUI and Camera privileges.
+        // Pass Kinema's PID so Python knows when to self-destruct.
+        std::string bashCmd = "osascript -e 'tell application \"Terminal\" to do script \"cd \\\"" + 
+                              projectRoot.string() + "\\\" && source tools/mediapipe-env/bin/activate && python3 tools/.hidden_tracker.py --kinema_pid " + 
+                              std::to_string(getpid()) + "\"'";
+
+        system(bashCmd.c_str());
     }
 
     m_uiManager.Init(Geni::Engine::GetInstance().GetWindow());
@@ -619,9 +628,7 @@ void Application::Destroy()
     {
         m_detector->Destroy();
     }
-    
-    if (m_trackerPid > 0) {
-        kill(m_trackerPid, SIGTERM);
-        unlink("tools/.hidden_tracker.py");
-    }
+    auto exeFolder = Geni::Engine::GetInstance().GetFileSystem().GetExecutableFolder();
+    auto projectRoot = exeFolder.parent_path().parent_path().parent_path().parent_path().parent_path();
+    unlink((projectRoot / "tools" / ".hidden_tracker.py").string().c_str());
 }
