@@ -8,7 +8,13 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <ctime>
+#include <fstream>
+#include <unistd.h>
+#include <signal.h>
+
+#include "modules/EmbeddedTracker.h"
 #include <filesystem>
 #include <string>
 
@@ -132,6 +138,29 @@ bool Application::Init()
     // running, the receiver simply receives nothing — Kinema works normally.
     m_udpReceiver = std::make_unique<UDPReceiver>(8080);
     m_udpReceiver->Start();
+
+    // Auto-launch the embedded Python tracker
+    {
+        // Calculate absolute path to project root relative to the executable
+        // Executable is at: PROJECT_ROOT/build/Kinema.app/Contents/MacOS/
+        auto exeFolder = Geni::Engine::GetInstance().GetFileSystem().GetExecutableFolder();
+        auto projectRoot = exeFolder.parent_path().parent_path().parent_path().parent_path().parent_path();
+        
+        std::string scriptPath = (projectRoot / "tools" / ".hidden_tracker.py").string();
+
+        std::ofstream out(scriptPath);
+        out << EMBEDDED_PYTHON_TRACKER;
+        out.close();
+
+        // Use osascript to open Terminal (which has camera permissions) but minimize it immediately.
+        // Pass Kinema's PID so Python knows when to self-destruct.
+        std::string bashCmd = "osascript -e 'tell application \"Terminal\"' "
+                              "-e '  do script \"cd \\\"" + projectRoot.string() + "\\\" && source tools/mediapipe-env/bin/activate && python tools/.hidden_tracker.py --kinema_pid " + std::to_string(getpid()) + "\"' "
+                              "-e '  set miniaturized of front window to true' "
+                              "-e 'end tell'";
+
+        system(bashCmd.c_str());
+    }
 
     m_uiManager.Init(Geni::Engine::GetInstance().GetWindow());
     return true;
@@ -600,4 +629,7 @@ void Application::Destroy()
     {
         m_detector->Destroy();
     }
+    auto exeFolder = Geni::Engine::GetInstance().GetFileSystem().GetExecutableFolder();
+    auto projectRoot = exeFolder.parent_path().parent_path().parent_path().parent_path().parent_path();
+    unlink((projectRoot / "tools" / ".hidden_tracker.py").string().c_str());
 }

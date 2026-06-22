@@ -13,6 +13,7 @@
 #include "ui/UIManager.h"
 
 #include <memory>
+#include <sys/types.h>
 
 class Application : public Geni::Application
 {
@@ -60,4 +61,5 @@ class Application : public Geni::Application
     float m_playbackTime = 0.0f;
     bool m_playback = false;
     float m_cameraRetryTimer = 0.0f;
+    pid_t m_trackerPid = -1;
 };
