@@ -8,7 +8,13 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <ctime>
+#include <fstream>
+#include <unistd.h>
+#include <signal.h>
+
+#include "modules/EmbeddedTracker.h"
 #include <filesystem>
 #include <string>
 
@@ -132,6 +138,19 @@ bool Application::Init()
     // running, the receiver simply receives nothing — Kinema works normally.
     m_udpReceiver = std::make_unique<UDPReceiver>(8080);
     m_udpReceiver->Start();
+
+    // Auto-launch the embedded Python tracker
+    {
+        std::ofstream out("tools/.hidden_tracker.py");
+        out << EMBEDDED_PYTHON_TRACKER;
+        out.close();
+
+        m_trackerPid = fork();
+        if (m_trackerPid == 0) {
+            execl("/bin/bash", "bash", "-c", "source tools/mediapipe-env/bin/activate && python3 tools/.hidden_tracker.py", NULL);
+            exit(1);
+        }
+    }
 
     m_uiManager.Init(Geni::Engine::GetInstance().GetWindow());
     return true;
@@ -599,5 +618,10 @@ void Application::Destroy()
     if (m_detector)
     {
         m_detector->Destroy();
+    }
+    
+    if (m_trackerPid > 0) {
+        kill(m_trackerPid, SIGTERM);
+        unlink("tools/.hidden_tracker.py");
     }
 }
