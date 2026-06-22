@@ -401,7 +401,7 @@ void Application::Update(float deltaTime)
     }
 
     std::vector<MarkerObservation> observations;
-    if (m_detector && m_uiState.enableColorDetection)
+    if (m_detector)
     {
         observations = m_detector->Detect();
 
@@ -489,7 +489,11 @@ void Application::Update(float deltaTime)
         if (m_udpReceiver)
             mpPose = m_udpReceiver->GetLatestPose();
 
-        m_skelDriver.Apply(*m_riggedSkeleton, observations, [this](const MarkerObservation &o) {
+        std::vector<MarkerObservation> activeObs;
+        if (m_uiState.enableColorDetection)
+            activeObs = observations;
+
+        m_skelDriver.Apply(*m_riggedSkeleton, activeObs, [this](const MarkerObservation &o) {
             return Unproject2DtoWorld(o.centroidNorm, o.areaPixels);
         }, mpPose);
 

@@ -54,6 +54,9 @@ print("Press 'q' to quit.")
 
 try:
     frame_timestamp_ms = 0
+    smoothed_landmarks = {}
+    ALPHA = 0.5  # Smoothing factor (0.0 = completely frozen, 1.0 = no smoothing)
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -80,11 +83,27 @@ try:
             landmarks_data = []
             for idx, lm in enumerate(result.pose_landmarks[0]):
                 wz = world_lms[idx].z if (world_lms and idx < len(world_lms)) else 0.0
+                
+                # Apply EMA Smoothing
+                new_x, new_y, new_z = lm.x, lm.y, wz
+                if idx in smoothed_landmarks:
+                    old_x, old_y, old_z = smoothed_landmarks[idx]
+                    new_x = ALPHA * new_x + (1 - ALPHA) * old_x
+                    new_y = ALPHA * new_y + (1 - ALPHA) * old_y
+                    new_z = ALPHA * new_z + (1 - ALPHA) * old_z
+                
+                smoothed_landmarks[idx] = (new_x, new_y, new_z)
+                
+                # Update objects so drawing code also uses smoothed values
+                lm.x, lm.y = new_x, new_y
+                if world_lms and idx < len(world_lms):
+                    world_lms[idx].z = new_z
+
                 landmarks_data.append({
                     "id": idx,
-                    "x":  lm.x,
-                    "y":  lm.y,
-                    "z":  wz,   # metric depth in metres relative to hip centre
+                    "x":  new_x,
+                    "y":  new_y,
+                    "z":  new_z,   # metric depth in metres relative to hip centre
                     "v":  lm.visibility if hasattr(lm, "visibility") else 1.0,
                 })
 

@@ -461,15 +461,29 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
         float bodyYawAngle = glm::clamp(bodyYawRaw, -glm::pi<float>() * 0.45f,
                                                      glm::pi<float>() * 0.45f);
 
-        // ── Torso LEAN: shoulder X midpoint ───────────────────────────────
-        // Shoulder midpoint shifts left/right when the body leans or steps.
-        // (ls.x + rs.x)/2 > 0.5 → body shifted RIGHT on screen.
-        // Without X negation (same convention as colour markers):
-        //   high midX → positive worldX → body leans to character's right.
-        // We express this as a roll angle around the world Z axis.
-        float shoulderMidX  = (ls.x + rs.x) * 0.5f;
-        float bodyLeanRaw   = (shoulderMidX - 0.5f) * 1.5f;   // [-0.75, +0.75] rad
-        float bodyLeanAngle = glm::clamp(bodyLeanRaw, -0.5f, 0.5f);
+        // ── Torso LEAN: Spine Angle ───────────────────────────────
+        // Calculate lean based on the angle between the shoulder midpoint and hip midpoint.
+        // This makes the lean independent of the person's horizontal position in the camera frame.
+        float bodyLeanAngle = 0.0f;
+        if (mpPose.hasJoint(MP_LEFT_HIP, 0.3f) && mpPose.hasJoint(MP_RIGHT_HIP, 0.3f))
+        {
+            glm::vec3 lh = mpPose.getJoint(MP_LEFT_HIP);
+            glm::vec3 rh = mpPose.getJoint(MP_RIGHT_HIP);
+            
+            glm::vec2 shoulderMid = glm::vec2(ls.x + rs.x, ls.y + rs.y) * 0.5f;
+            glm::vec2 hipMid      = glm::vec2(lh.x + rh.x, lh.y + rh.y) * 0.5f;
+
+            // dx > 0 means shoulders are to the right of hips
+            // dy > 0 means hips are below shoulders (standard upright posture in screen space)
+            float dx = shoulderMid.x - hipMid.x;
+            float dy = hipMid.y - shoulderMid.y;
+            
+            if (dy > 0.05f) 
+            {
+                float leanRaw = std::atan2(dx, dy);
+                bodyLeanAngle = glm::clamp(leanRaw * 1.5f, -0.5f, 0.5f);
+            }
+        }
 
         // Apply to the FIRST bone found among standard Mixamo torso bone names.
         static const std::vector<std::string> TORSO_BONES = {
