@@ -15,8 +15,12 @@ constexpr int MP_LEFT_WRIST = 15;
 
 // Head / face landmark IDs
 constexpr int MP_NOSE       = 0;
-constexpr int MP_RIGHT_EAR  = 7;   // person's right ear (appears on LEFT in non-mirrored feed)
-constexpr int MP_LEFT_EAR   = 8;   // person's left ear  (appears on RIGHT in non-mirrored feed)
+constexpr int MP_RIGHT_EAR  = 7;   // person's right ear
+constexpr int MP_LEFT_EAR   = 8;   // person's left ear
+
+// Hip / pelvis landmark IDs (for body rotation tracking)
+constexpr int MP_LEFT_HIP   = 23;  // person's right hip  (constant naming follows arm convention)
+constexpr int MP_RIGHT_HIP  = 24;  // person's left hip
 
 struct MediaPipeLandmark {
     int id;

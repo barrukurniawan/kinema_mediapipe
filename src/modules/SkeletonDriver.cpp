@@ -277,7 +277,11 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
             float refZ = (chain.rootBindWorldPos.z > 0.1f) ? chain.rootBindWorldPos.z : 1.5f;
             float worldX =  (lm.x - 0.5f) * 2.0f * refZ;   // matches color marker formula
             float worldY = -(lm.y - 0.5f) * 2.0f * refZ;   // screen Y is inverted vs world Y
-            float worldZ = refZ;
+            // lm.z is metric depth from pose_world_landmarks (metres).
+            // MediaPipe convention: Z is POSITIVE toward the camera.
+            // So when the user punches forward (toward camera), lm.z increases.
+            // We SUBTRACT it so worldZ decreases (= closer to camera in our world).
+            float worldZ = refZ - lm.z;   // lm.z>0 when forward -> worldZ decreases toward camera
             out = glm::vec3(worldX, worldY, worldZ);
             return true;
         };
@@ -394,6 +398,61 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
 
             glm::quat headWorldRot = yawQ * pitchQ * rollQ * headBindRot;
             bone->SetRotation(WorldToLocalRot(bone, headWorldRot));
+        }
+    }
+
+    // ── MediaPipe body rotation & lean tracking ────────────────────────────────
+    // Uses shoulder landmarks to detect:
+    //  • Torso YAW  – body turning left/right (shoulder Z difference from world landmarks)
+    //  • Torso LEAN – body shifting left/right (shoulder X midpoint vs centre)
+    // Applied to common Mixamo hip/spine bone names. Falls back gracefully when
+    // the bone is not present in the loaded skeleton.
+    if (!mpPose.empty() &&
+        mpPose.hasJoint(MP_LEFT_SHOULDER,  0.3f) &&
+        mpPose.hasJoint(MP_RIGHT_SHOULDER, 0.3f))
+    {
+        glm::vec3 ls = mpPose.getJoint(MP_LEFT_SHOULDER);
+        glm::vec3 rs = mpPose.getJoint(MP_RIGHT_SHOULDER);
+
+        // ── Torso YAW: shoulder Z-difference ──────────────────────────────
+        // When the body turns RIGHT the right shoulder (rs, MP const 12 = person's left)
+        // goes BACK (z more positive) and left shoulder (ls, MP const 11 = person's right)
+        // comes FORWARD (z more negative).
+        //   ls.z - rs.z < 0  →  body turned RIGHT  →  negative yaw (CW from above)
+        float bodyYawRaw   = (ls.z - rs.z) * 2.5f;   // scale: ±0.3 m -> ±0.75 rad
+        float bodyYawAngle = glm::clamp(bodyYawRaw, -glm::pi<float>() * 0.45f,
+                                                     glm::pi<float>() * 0.45f);
+
+        // ── Torso LEAN: shoulder X midpoint ───────────────────────────────
+        // Shoulder midpoint shifts left/right when the body leans or steps.
+        // (ls.x + rs.x)/2 > 0.5 → body shifted RIGHT on screen.
+        // Without X negation (same convention as colour markers):
+        //   high midX → positive worldX → body leans to character's right.
+        // We express this as a roll angle around the world Z axis.
+        float shoulderMidX  = (ls.x + rs.x) * 0.5f;
+        float bodyLeanRaw   = (shoulderMidX - 0.5f) * 1.5f;   // [-0.75, +0.75] rad
+        float bodyLeanAngle = glm::clamp(bodyLeanRaw, -0.5f, 0.5f);
+
+        // Apply to the FIRST bone found among standard Mixamo torso bone names.
+        static const std::vector<std::string> TORSO_BONES = {
+            "mixamorig:Hips", "mixamorig:Spine", "Hips", "Spine"
+        };
+        for (const auto &boneName : TORSO_BONES)
+        {
+            int jointIndex = skeleton.FindJoint(boneName);
+            if (jointIndex < 0) continue;
+            Geni::GameObject *bone = skeleton.GetJointNode(jointIndex);
+            if (!bone) continue;
+
+            glm::mat4 bindWorld   = glm::inverse(skeleton.GetInverseBindMatrix(jointIndex));
+            glm::quat torsoBindRot = glm::quat_cast(bindWorld);
+
+            glm::quat yawQ  = glm::angleAxis(bodyYawAngle,  glm::vec3(0.0f, 1.0f, 0.0f));
+            glm::quat leanQ = glm::angleAxis(bodyLeanAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+
+            glm::quat torsoWorldRot = yawQ * leanQ * torsoBindRot;
+            bone->SetRotation(WorldToLocalRot(bone, torsoWorldRot));
+            break;  // only drive one torso bone
         }
     }
 }
