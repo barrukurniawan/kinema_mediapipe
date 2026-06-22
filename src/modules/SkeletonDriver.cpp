@@ -257,23 +257,27 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
         };
 
         // Helper: map MediaPipe normalized (x,y,z) to the same world space that
-        // the color markers live in.  MP x/y are normalized [0..1] matching
-        // centroidNorm, so re-use Unproject2DtoWorld's linear formula here.
-        // MP z encodes depth relative to the hip — we ignore it and pin to the
-        // shoulder plane exactly as the color-marker solver does.
+        // the color markers live in.
         //
-        // X is NEGATED: in a non-mirrored webcam feed the user's LEFT hand
-        // appears on the RIGHT side of the frame (high x). The 3D character
-        // faces +Z (away from camera) so its LEFT arm lives at NEGATIVE worldX.
-        // Negating aligns the two spaces so left->left and right->right.
+        // Formula mirrors Unproject2DtoWorld (color markers):
+        //   worldX = (x - 0.5) * 2  ← NO negation on X (same as color markers)
+        //   worldY = -(y - 0.5) * 2 ← negated because screen Y goes down, world Y up
+        //
+        // The old code negated X based on a wrong assumption. Negating X flips
+        // the direction vector sign when the arm moves sideways, causing
+        // RotationBetween() to rotate the bone INWARD (through the body/back)
+        // instead of OUTWARD/UPWARD naturally. Color markers never needed X
+        // negation, so MediaPipe should not either.
+        //
+        // DEPTH: Use bind-pose shoulder depth as stable reference (fallback 1.5m)
+        // so we don't collapse to zero when depth calibration hasn't been done.
         auto mpToWorld = [&](int mpId, glm::vec3 &out) -> bool {
             if (!mpPose.hasJoint(mpId, 0.4f)) return false;
             glm::vec3 lm = mpPose.getJoint(mpId);
-            float worldX = -(lm.x - 0.5f) * 2.0f;   // negated to fix mirror
-            float worldY = -(lm.y - 0.5f) * 2.0f;
-            float worldZ = rootPos.z;
-            worldX *= (worldZ / (chain.rootBindWorldPos.z > 0.1f ? chain.rootBindWorldPos.z : 1.5f));
-            worldY *= (worldZ / (chain.rootBindWorldPos.z > 0.1f ? chain.rootBindWorldPos.z : 1.5f));
+            float refZ = (chain.rootBindWorldPos.z > 0.1f) ? chain.rootBindWorldPos.z : 1.5f;
+            float worldX =  (lm.x - 0.5f) * 2.0f * refZ;   // matches color marker formula
+            float worldY = -(lm.y - 0.5f) * 2.0f * refZ;   // screen Y is inverted vs world Y
+            float worldZ = refZ;
             out = glm::vec3(worldX, worldY, worldZ);
             return true;
         };
