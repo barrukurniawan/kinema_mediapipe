@@ -152,11 +152,12 @@ bool Application::Init()
         out << EMBEDDED_PYTHON_TRACKER;
         out.close();
 
-        // Use osascript to open a new Terminal window so Python has GUI and Camera privileges.
+        // Use osascript to open Terminal (which has camera permissions) but minimize it immediately.
         // Pass Kinema's PID so Python knows when to self-destruct.
-        std::string bashCmd = "osascript -e 'tell application \"Terminal\" to do script \"cd \\\"" + 
-                              projectRoot.string() + "\\\" && source tools/mediapipe-env/bin/activate && python3 tools/.hidden_tracker.py --kinema_pid " + 
-                              std::to_string(getpid()) + "\"'";
+        std::string bashCmd = "osascript -e 'tell application \"Terminal\"' "
+                              "-e '  do script \"cd \\\"" + projectRoot.string() + "\\\" && source tools/mediapipe-env/bin/activate && python tools/.hidden_tracker.py --kinema_pid " + std::to_string(getpid()) + "\"' "
+                              "-e '  set miniaturized of front window to true' "
+                              "-e 'end tell'";
 
         system(bashCmd.c_str());
     }
