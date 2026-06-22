@@ -314,4 +314,86 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
         SolveArmChain(rootBone, midBone, chain, rootPos, upperMarker, haveU, lowerMarker, haveL,
                       palmMarker, haveP);
     }
+
+    // ── MediaPipe head tracking (yaw + pitch + roll) ──────────────────────────
+    // Drives LookAt-mode bindings (head bone) using nose + ear landmarks.
+    // The existing color-marker LookAt (yaw-only) runs first in the binding loop
+    // above and skips if no marker is found. This block runs after and fills in
+    // full 3-axis head rotation when MediaPipe data is available and the color
+    // marker was NOT detected (so wearing an orange sticker still overrides).
+    if (!mpPose.empty() && mpPose.hasJoint(MP_NOSE, 0.3f))
+    {
+        glm::vec3 nose  = mpPose.getJoint(MP_NOSE);
+        bool haveLEar   = mpPose.hasJoint(MP_LEFT_EAR,  0.3f);
+        bool haveREar   = mpPose.hasJoint(MP_RIGHT_EAR, 0.3f);
+        glm::vec3 le    = haveLEar  ? mpPose.getJoint(MP_LEFT_EAR)  : nose;
+        glm::vec3 re    = haveREar  ? mpPose.getJoint(MP_RIGHT_EAR) : nose;
+        bool haveEars   = haveLEar && haveREar;
+
+        // Ear midpoint: horizontal reference for yaw, vertical for roll
+        glm::vec3 earMid = haveEars ? (le + re) * 0.5f : nose;
+
+        // Ear-to-ear distance normalizes angles so distance from camera doesn't matter
+        float earDist = haveEars ? glm::length(glm::vec2(re.x - le.x, re.y - le.y)) : 0.12f;
+        earDist = std::max(earDist, 0.01f);
+
+        // Shoulder midpoint: vertical pitch reference (keeps pitch independent of camera height)
+        bool haveLS = mpPose.hasJoint(MP_LEFT_SHOULDER,  0.3f);
+        bool haveRS = mpPose.hasJoint(MP_RIGHT_SHOULDER, 0.3f);
+        float shoulderMidY = (haveLS && haveRS)
+            ? (mpPose.getJoint(MP_LEFT_SHOULDER).y + mpPose.getJoint(MP_RIGHT_SHOULDER).y) * 0.5f
+            : (nose.y + 0.25f);   // fallback: assume shoulders are 25% below nose
+
+        // ── Yaw (turning left / right) ────────────────────────────────────────
+        // nose.x relative to ear midpoint, NEGATED to match the camera mirror convention:
+        // turning RIGHT → nose moves RIGHT on screen (high x) → we want positive yaw
+        // but (nose.x - earMid.x) > 0, so we negate to get the correct direction.
+        float yawRaw   = -(nose.x - earMid.x) / earDist;
+        float yawAngle = glm::clamp(yawRaw * 1.6f, -1.2f, 1.2f);   // radians, ±~69°
+
+        // ── Pitch (nodding up / down) ──────────────────────────────────────────
+        // Use nose.y relative to earMid.y (NOT shoulder, which gave a huge static
+        // offset that clamped all movement). The nose sits anatomically ~0.28×earDist
+        // below the ear midpoint when looking straight ahead — subtract that rest
+        // offset so pitchRaw ≈ 0 at neutral gaze.
+        //
+        //  Looking UP  → nose.y decreases → pitchRaw < 0 → negative pitchAngle
+        //                glm::angleAxis(-angle, X) rotates chin back → head looks UP ✓
+        //  Looking DOWN → nose.y increases → pitchRaw > 0 → positive pitchAngle  ✓
+        constexpr float PITCH_REST_OFFSET = 0.28f;  // anatomical nose-below-ear ratio
+        float pitchRaw   = (nose.y - earMid.y) / earDist - PITCH_REST_OFFSET;
+        float pitchAngle = glm::clamp(pitchRaw * 2.0f, -0.7f, 0.6f);
+
+        // ── Roll (head tilt) ───────────────────────────────────────────────────
+        // left ear LOWER than right ear on screen (larger y) → head tilted RIGHT → positive roll
+        float rollAngle = 0.0f;
+        if (haveEars)
+        {
+            float rollRaw = (le.y - re.y) / earDist;   // positive = left ear lower
+            rollAngle = glm::clamp(rollRaw * 1.0f, -0.6f, 0.6f);
+        }
+
+        // Apply to every LookAt binding that has no active color marker
+        for (const auto &binding : m_bindings)
+        {
+            if (binding.mode != MarkerBinding::Mode::LookAt) continue;
+            if (byId.count(binding.markerId))              continue; // color marker takes priority
+
+            int jointIndex = skeleton.FindJoint(binding.boneName);
+            if (jointIndex < 0) continue;
+            Geni::GameObject *bone = skeleton.GetJointNode(jointIndex);
+            if (!bone) continue;
+
+            glm::mat4 bindWorld  = glm::inverse(skeleton.GetInverseBindMatrix(jointIndex));
+            glm::quat headBindRot = glm::quat_cast(bindWorld);
+
+            // Compose: yaw first (around world Y), then pitch (world X), then roll (world Z)
+            glm::quat yawQ   = glm::angleAxis(yawAngle,   glm::vec3(0.0f, 1.0f, 0.0f));
+            glm::quat pitchQ = glm::angleAxis(pitchAngle, glm::vec3(1.0f, 0.0f, 0.0f));
+            glm::quat rollQ  = glm::angleAxis(rollAngle,  glm::vec3(0.0f, 0.0f, 1.0f));
+
+            glm::quat headWorldRot = yawQ * pitchQ * rollQ * headBindRot;
+            bone->SetRotation(WorldToLocalRot(bone, headWorldRot));
+        }
+    }
 }

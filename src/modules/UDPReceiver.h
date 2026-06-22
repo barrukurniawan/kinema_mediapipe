@@ -13,6 +13,11 @@ constexpr int MP_LEFT_ELBOW = 13;
 constexpr int MP_RIGHT_WRIST = 16;
 constexpr int MP_LEFT_WRIST = 15;
 
+// Head / face landmark IDs
+constexpr int MP_NOSE       = 0;
+constexpr int MP_RIGHT_EAR  = 7;   // person's right ear (appears on LEFT in non-mirrored feed)
+constexpr int MP_LEFT_EAR   = 8;   // person's left ear  (appears on RIGHT in non-mirrored feed)
+
 struct MediaPipeLandmark {
     int id;
     glm::vec3 pos; // raw normalized (x,y) and metric (z)
