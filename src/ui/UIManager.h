@@ -67,8 +67,8 @@ struct UIState
     bool showPooledFrame = false;    // show pooled frame instead of raw in camera feed
 
     // Marker jitter filter (deadzone + EMA on 2D centroids); live-tunable
-    float markerSmoothing = 0.35f;   // EMA factor 0..1 (higher = snappier, less smooth)
-    float markerDeadzone = 0.012f;   // normalized centroid radius held as no-move
+    float markerSmoothing = 0.25f;   // EMA factor 0..1 (lower = smoother)
+    float markerDeadzone = 0.015f;   // normalized centroid radius held as no-move
     float occlusionHoldSec = 0.3f;   // extrapolate lost markers this long; 0 = off
     float armForward = 0.0f;         // constant forward lean of IK arms (world units)
 
@@ -85,7 +85,7 @@ struct UIState
     bool importMarkersRequested = false;
 
     // Model import
-    char modelPath[512] = "models/mixamo_lowpoly/mixamo-animated-lowpoly.glb";
+    char modelPath[512] = "models/mixamo_lowpoly/defeated.glb";
     std::string loadedModelPath;
     std::vector<std::string> availableBones;
     bool loadModelRequested = false;

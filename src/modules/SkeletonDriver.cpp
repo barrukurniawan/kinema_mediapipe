@@ -11,6 +11,23 @@
 
 namespace
 {
+// Helper: Extracts a pure rotation quaternion from a matrix, safely stripping any
+// uniform scale. `glm::quat_cast` produces skewed/unnormalized results if the
+// matrix contains scale.
+glm::quat ExtractRotation(const glm::mat4 &m)
+{
+    glm::vec3 col0(m[0]);
+    glm::vec3 col1(m[1]);
+    glm::vec3 col2(m[2]);
+    
+    // Prevent divide-by-zero if scale is 0
+    if (glm::length2(col0) > 1e-10f) col0 = glm::normalize(col0);
+    if (glm::length2(col1) > 1e-10f) col1 = glm::normalize(col1);
+    if (glm::length2(col2) > 1e-10f) col2 = glm::normalize(col2);
+    
+    glm::mat3 rot(col0, col1, col2);
+    return glm::quat_cast(rot);
+}
 // Given a target world position for `bone`, compute the local position that makes
 // its world end up at `targetWorld` (leaving parent's pose unchanged).
 glm::vec3 WorldToLocalPos(Geni::GameObject *bone, const glm::vec3 &targetWorld)
@@ -32,7 +49,8 @@ glm::quat WorldToLocalRot(Geni::GameObject *bone, const glm::quat &desiredWorldR
     {
         return desiredWorldRot;
     }
-    glm::quat parentWorldRot = glm::quat_cast(parent->GetWorldTransform());
+    // Normalize quat_cast to strip out any scaling from the parent's world transform
+    glm::quat parentWorldRot = ExtractRotation(parent->GetWorldTransform());
     return glm::inverse(parentWorldRot) * desiredWorldRot;
 }
 
@@ -97,8 +115,8 @@ void PrimeIKChain(IKChain &chain, const Geni::Skeleton &skeleton, int rootIdx, i
     chain.lowerBindDirWorld =
         chain.lowerLen > 1e-5f ? (endPos - midPos) / chain.lowerLen : glm::vec3(0, 1, 0);
     chain.rootBindWorldPos = rootPos;
-    chain.rootBindWorldRot = glm::quat_cast(rootBind);
-    chain.midBindWorldRot = glm::quat_cast(midBind);
+    chain.rootBindWorldRot = ExtractRotation(rootBind);
+    chain.midBindWorldRot = ExtractRotation(midBind);
 }
 
 // Segment-driven arm solver. The shoulder joint (`rootPos`) is held fixed; the
@@ -160,6 +178,20 @@ int FindBoneWithFallbacks(const Geni::Skeleton &skeleton, const std::vector<std:
         int idx = skeleton.FindJoint(name);
         if (idx >= 0)
             return idx;
+        
+        // Auto-map zombieman.glb and other models where ':' was converted to '_' or removed completely
+        if (name.find("mixamorig:") == 0)
+        {
+            std::string altName = "mixamorig_" + name.substr(10);
+            idx = skeleton.FindJoint(altName);
+            if (idx >= 0)
+                return idx;
+            
+            std::string altName2 = "mixamorig" + name.substr(10);
+            idx = skeleton.FindJoint(altName2);
+            if (idx >= 0)
+                return idx;
+        }
     }
     return -1;
 }
@@ -190,16 +222,63 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
 {
     auto byId = IndexById(observations);
 
-    // Helper: map MediaPipe normalized (x,y,z) to the same world space that
-    // the color markers live in. Shared by arms and legs.
+    // Helper: map MediaPipe normalized (x,y,z) into world space by anchoring
+    // on the skeleton shoulder position from MediaPipe, then computing the
+    // per-joint offset from that shoulder in body-scale units.
+    // Uses shoulder landmark as the reference so that when hands are down the
+    // 3D arm naturally follows down.
     auto mpToWorld = [&](int mpId, glm::vec3 &out, float rootBindZ) -> bool {
         if (mpPose.empty() || !mpPose.hasJoint(mpId, 0.4f)) return false;
         glm::vec3 lm = mpPose.getJoint(mpId);
         float refZ = (rootBindZ > 0.1f) ? rootBindZ : 1.5f;
-        float worldX =  (lm.x - 0.5f) * 2.0f * refZ;
+        // Negate X so left/right is correctly mirrored (camera is flipped)
+        float worldX = -(lm.x - 0.5f) * 2.0f * refZ;
         float worldY = -(lm.y - 0.5f) * 2.0f * refZ;
         float worldZ = refZ - lm.z;
         out = glm::vec3(worldX, worldY, worldZ);
+        return true;
+    };
+    
+    // Build a shoulder-anchor mapping: for each arm we anchor MediaPipe
+    // coordinates by computing the offset of each joint relative to the
+    // shoulder landmark so arm directions are in body-relative space.
+    // This lets hand-down → arm-down, hand-up → arm-up.
+    auto mpToWorldAnchored = [&](int mpId, int mpShoulderRef, glm::vec3 shoulderWorldPos, glm::vec3 &out, float rootBindZ) -> bool {
+        if (mpPose.empty()) return false;
+        // Use lower confidence thresholds so arm tracking stays active even when
+        // one landmark is partially occluded or at the edge of the frame.
+        if (!mpPose.hasJoint(mpId, 0.20f)) return false;
+        if (!mpPose.hasJoint(mpShoulderRef, 0.20f)) return false;
+        
+        glm::vec3 lm  = mpPose.getJoint(mpId);
+        glm::vec3 sh  = mpPose.getJoint(mpShoulderRef);
+        
+        // Use the inter-shoulder distance to calibrate scale
+        float earToEarApprox = 0.12f;
+        if (mpPose.hasJoint(MP_LEFT_SHOULDER, 0.3f) && mpPose.hasJoint(MP_RIGHT_SHOULDER, 0.3f))
+        {
+            glm::vec3 ls = mpPose.getJoint(MP_LEFT_SHOULDER);
+            glm::vec3 rs = mpPose.getJoint(MP_RIGHT_SHOULDER);
+            float screenShoulderDist = glm::length(glm::vec2(rs.x - ls.x, rs.y - ls.y));
+            if (screenShoulderDist > 0.01f)
+                earToEarApprox = screenShoulderDist;
+        }
+        
+        // Body height in world units: shoulder pair is ~0.4 of body height.
+        // Scale: how many world units per normalized MediaPipe unit.
+        float refZ = (rootBindZ > 0.1f) ? rootBindZ : 1.5f;
+        float worldScale = refZ * 2.0f;
+        
+        // Offset from shoulder landmark to target landmark in normalized screen space.
+        // MediaPipe uses body-centric labels: LEFT_WRIST = person's actual left hand.
+        // In a mirrored front-facing camera, the person's left hand appears on the
+        // RIGHT side of the screen (high x). The character's left arm is at +X in world.
+        // So dx should be POSITIVE when lm.x > sh.x → DO NOT negate.
+        float dx = (lm.x - sh.x) * worldScale;
+        float dy = -(lm.y - sh.y) * worldScale;  // screen Y down → world Y up
+        float dz = -(lm.z - sh.z) * worldScale;  // MediaPipe Z: smaller = closer to cam → world +Z
+        
+        out = shoulderWorldPos + glm::vec3(dx, dy, dz);
         return true;
     };
 
@@ -229,7 +308,7 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
             // position. This keeps the bone upright and only turns it left/right.
             // The angle is measured from the +Z axis toward +X in the XZ plane.
             glm::mat4 bindWorld = glm::inverse(skeleton.GetInverseBindMatrix(jointIndex));
-            glm::quat boneBindRot = glm::quat_cast(bindWorld);
+            glm::quat boneBindRot = ExtractRotation(bindWorld);
 
             float yaw = std::atan2(targetWorld.x, targetWorld.z);
             glm::quat yawDelta = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -322,24 +401,24 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
 
         glm::vec3 upperMarker(0.0f), lowerMarker(0.0f), palmMarker(0.0f);
 
-        // Upper arm: always prefer color marker; fall back to MP shoulder→elbow midpoint.
+        // Upper arm: always prefer color marker; fall back to MP shoulder (anchored).
         bool haveU = fetch(chain.upperArmMarkerId, upperMarker);
-        if (!haveU) haveU = mpToWorld(mpShoulderIdx, upperMarker, chain.rootBindWorldPos.z);
+        if (!haveU) haveU = mpToWorldAnchored(mpShoulderIdx, mpShoulderIdx, rootPos, upperMarker, chain.rootBindWorldPos.z);
 
-        // Forearm: prefer color marker; fall back to MP elbow.
+        // Forearm: prefer color marker; fall back to MP elbow (anchored to shoulder).
         bool haveL = fetch(chain.foreArmMarkerId, lowerMarker);
-        if (!haveL) haveL = mpToWorld(mpElbowIdx, lowerMarker, chain.rootBindWorldPos.z);
+        if (!haveL) haveL = mpToWorldAnchored(mpElbowIdx, mpShoulderIdx, rootPos, lowerMarker, chain.rootBindWorldPos.z);
 
         // Palm (end-effector): Sensor Fusion core logic.
-        // Priority: color marker >> MediaPipe wrist
+        // Priority: color marker >> MediaPipe wrist (anchored to shoulder)
         bool haveP = fetch(chain.markerId, palmMarker);
         if (haveP)
         {
             palmMarker += chain.worldOffset;
         }
-        else if (mpToWorld(mpWristIdx, palmMarker, chain.rootBindWorldPos.z))
+        else if (mpToWorldAnchored(mpWristIdx, mpShoulderIdx, rootPos, palmMarker, chain.rootBindWorldPos.z))
         {
-            // MediaPipe fallback: use AI wrist position
+            // MediaPipe fallback: use AI wrist position relative to shoulder
             haveP = true;
         }
 
@@ -399,8 +478,12 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
         //                glm::angleAxis(-angle, X) rotates chin back → head looks UP ✓
         //  Looking DOWN → nose.y increases → pitchRaw > 0 → positive pitchAngle  ✓
         constexpr float PITCH_REST_OFFSET = 0.28f;  // anatomical nose-below-ear ratio
+        // Gentle downward bias (+0.08 rad ≈ 4.6°) so that when looking straight
+        // at the camera the head sits naturally level rather than slightly tilted up.
+        // SIGN: positive pitchAngle = head tilts DOWN (chin forward = +X rotation).
+        constexpr float PITCH_STATIC_BIAS  = +0.08f;
         float pitchRaw   = (nose.y - earMid.y) / earDist - PITCH_REST_OFFSET;
-        float pitchAngle = glm::clamp(pitchRaw * 2.0f, -0.7f, 0.6f);
+        float pitchAngle = glm::clamp(pitchRaw * 2.0f + PITCH_STATIC_BIAS, -0.7f, 0.8f);
 
         // ── Roll (head tilt) ───────────────────────────────────────────────────
         // left ear LOWER than right ear on screen (larger y) → head tilted RIGHT → positive roll
@@ -481,15 +564,29 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
             if (dy > 0.05f) 
             {
                 float leanRaw = std::atan2(dx, dy);
-                bodyLeanAngle = glm::clamp(leanRaw * 1.5f, -0.5f, 0.5f);
+                // Increase multiplier to 2.5 and clamp to 0.9 rad (~52°) so that
+                // dramatic body leans are captured more faithfully.
+                bodyLeanAngle = glm::clamp(leanRaw * 2.5f, -0.9f, 0.9f);
             }
         }
 
-        // Apply to the FIRST bone found among standard Mixamo torso bone names.
-        static const std::vector<std::string> TORSO_BONES = {
-            "mixamorig:Hips", "mixamorig:Spine", "Hips", "Spine"
+        // ── Apply YAW to Hips, LEAN to Spine separately ──────────────────────
+        // KEY INSIGHT: If we apply lean to Hips, the legs (children of Hips) also
+        // rotate, making feet float. By applying lean to Spine only, the hips stay
+        // level → legs stay on the ground, only the upper body tilts.
+        //
+        // Also negate lean so that leaning LEFT in camera → character leans LEFT.
+        bodyLeanAngle = -bodyLeanAngle;
+
+        static const std::vector<std::string> HIP_BONES = {
+            "mixamorig:Hips",  "Hips",  "mixamorigHips",  "mixamorig_Hips"
         };
-        for (const auto &boneName : TORSO_BONES)
+        static const std::vector<std::string> SPINE_BONES = {
+            "mixamorig:Spine", "Spine", "mixamorigSpine", "mixamorig_Spine"
+        };
+
+        // Apply only YAW (body turn) to Hips
+        for (const auto &boneName : HIP_BONES)
         {
             int jointIndex = skeleton.FindJoint(boneName);
             if (jointIndex < 0) continue;
@@ -497,14 +594,28 @@ void SkeletonDriver::Apply(Geni::Skeleton &skeleton, const std::vector<MarkerObs
             if (!bone) continue;
 
             glm::mat4 bindWorld   = glm::inverse(skeleton.GetInverseBindMatrix(jointIndex));
-            glm::quat torsoBindRot = glm::quat_cast(bindWorld);
+            glm::quat hipBindRot  = ExtractRotation(bindWorld);
+            glm::quat yawQ        = glm::angleAxis(bodyYawAngle, glm::vec3(0.0f, 1.0f, 0.0f));
+            bone->SetRotation(WorldToLocalRot(bone, yawQ * hipBindRot));
+            break;
+        }
 
-            glm::quat yawQ  = glm::angleAxis(bodyYawAngle,  glm::vec3(0.0f, 1.0f, 0.0f));
-            glm::quat leanQ = glm::angleAxis(bodyLeanAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+        // Apply only LEAN (body tilt) to Spine — does NOT affect legs
+        if (std::abs(bodyLeanAngle) > 0.01f)
+        {
+            for (const auto &boneName : SPINE_BONES)
+            {
+                int jointIndex = skeleton.FindJoint(boneName);
+                if (jointIndex < 0) continue;
+                Geni::GameObject *bone = skeleton.GetJointNode(jointIndex);
+                if (!bone) continue;
 
-            glm::quat torsoWorldRot = yawQ * leanQ * torsoBindRot;
-            bone->SetRotation(WorldToLocalRot(bone, torsoWorldRot));
-            break;  // only drive one torso bone
+                glm::mat4 bindWorld    = glm::inverse(skeleton.GetInverseBindMatrix(jointIndex));
+                glm::quat spineBindRot = ExtractRotation(bindWorld);
+                glm::quat leanQ        = glm::angleAxis(bodyLeanAngle, glm::vec3(0.0f, 0.0f, 1.0f));
+                bone->SetRotation(WorldToLocalRot(bone, leanQ * spineBindRot));
+                break;
+            }
         }
     }
 

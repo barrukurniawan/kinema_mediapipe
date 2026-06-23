@@ -256,6 +256,30 @@ void Application::LoadRigFromState()
         }
     }
 
+    // Auto-scale models that are in centimeters (like zombieman.glb) instead of meters.
+    // If the Head bone is more than 5 units (5 meters) high, it's almost certainly 100x too big.
+    if (m_riggedSkeleton)
+    {
+        int headIdx = m_riggedSkeleton->FindJoint("mixamorig:Head");
+        if (headIdx < 0) headIdx = m_riggedSkeleton->FindJoint("mixamorig_Head");
+        if (headIdx < 0) headIdx = m_riggedSkeleton->FindJoint("mixamorigHead");
+        if (headIdx < 0) headIdx = m_riggedSkeleton->FindJoint("Head");
+        if (headIdx < 0) headIdx = m_riggedSkeleton->FindJoint("head_0_0");
+
+        if (headIdx >= 0)
+        {
+            Geni::GameObject* headNode = m_riggedSkeleton->GetJointNode(headIdx);
+            if (headNode)
+            {
+                float headY = headNode->GetWorldPosition().y;
+                if (headY > 5.0f)
+                {
+                    m_riggedObj->SetScale(glm::vec3(0.01f));
+                }
+            }
+        }
+    }
+
     m_uiState.markersDirty = true; // re-validate bindings against the new skeleton
 }
 
